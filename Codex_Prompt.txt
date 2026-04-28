@@ -1,0 +1,732 @@
+2026/4/22
+14.20
+仿照 CT02_PySerial_Uptest\SerialGuard CT02_PySerial_Uptest\ct02_downlink_guard.py 对于CT02物联网固件的CubeMX-Keil串口守护程序，在 STM32L0ProJ 这个STM32L0的工程程序里面，利用USART1(PA2\PA3)进行相同逻辑的串口守护，实现STM32L0对于CT02固件的上位机控制与MQTT平台的指令响应
+16.01
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching main.o(.bss.g_ct02_guard).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching startup_stm32l051xx.o(STACK).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching startup_stm32l051xx.o(HEAP).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching main.o(.bss.huart1).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching main.o(.bss.huart2).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching main.o(.bss..L_MergedGlobals).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching ct02_guard.o(.bss.g_active_guard).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching stm32l0xx_hal.o(.bss.uwTick).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching system_stm32l0xx.o(.data.SystemCoreClock).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching strtok.o(.data).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching mvars.o(.data).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching mvars.o(.data).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching errno.o(.data).
+hal_template\hal_template.axf: Error: L6407E: Sections of aggregate size 0x2e10 bytes could not fit into .ANY selector(s).
+
+出现了堆栈错误，因为L051的空间确实有限，能不能再CubeMX里面修改一下堆栈的大小？还是真的放不下这么多东西
+
+16.24
+STM32L0做一些简单的指示灯（PC13,GPIO 0 为亮，1为暗）的表示，就是如果现在是串口正在检测这个但是没有检测到这个CT02固件，就0.5s周期闪烁；如果意见连接成功，就常暗；如果发现接受到了MQTT-Down包，就闪烁2次（0.1s）;如果发包了，就闪烁三次（0.2s）；这样我就可以大致指导这个模块的状态；
+
+然后我也需要知道现在串口的收发情况如何？所以建立一个串口的实时收发的转发机制，就是将USART2(守护CT02)的信息，分为 MCU-RE(单片机收)，MCU-SE(单片机发)的信息(MCU-RE/MCU-SE作为转发包开头)，全部完整转发到USART1，以此我可以在上位机查看实时情况。
+
+上电或异常情况的检测方法，可以是发一个 AT ，然后回应答ok，就是CT02物理连接、供电情况没有问题，具体可以参考 DX-CT02-A资料包 20250725\02 模块功能应用指导\DX-CT02-A&B_串口UART_应用指导.md 
+
+16.59
+如果在上电后或者是在程序运行时，发现没有检测到CT02，就每隔0.5s发一个“AT”，查看串口应答，并使用USART2串口中断，检查是否返回ok，如果返回，就立即进入守护模式；
+
+在守护模式期间，以模式内发包解包的最低优先级，发AT并检查回复情况；守护期间，根据现有的py代码CT02_Serial_Software\ct02_con2mqtt.py，我的设计应该是先GPS冷启动（就是AT+PWRM=1
+AT+MGPSC=0
+AT+GPSMODE=3
+AT+MGPSC=1
+AT+GPSST 这五条指令），冷启动后，守护模式下会按照py程序/现有程序的逻辑进行解包并发包（UART）（基本CT02会1s向上位机发一次这个定位信息包，保险期间这个期间到1.5s），这个就是GPS定位守护
+
+按照此逻辑，进入守护模式的GPS发解包分为两种情况：
+1. 1.5s期间内，至少一次的解包/发包动作，完成一次，就喂养守护模式的状态开门狗（软件看门狗）一次，只要看门狗在此期间内得到一次喂养，就继续这个状态
+2. 1.5期间内，看门狗饿死；进入未连接态，USART2发送AT检查是否返回ok，如果返回，就回到守护态，并重来一遍守护态的GPS冷启动程序；不返回，就继续在未连接态
+因此大方向上，USART守护只有两个态，转移关系清晰，继续补充检查MCU程序
+
+17.28
+USART2我已经实际测量，没有发现在未连接态的发送“AT”，是不是代码有问题，检查C程序和STM32L0ProJ\hal_template.ioc CubeMX设置？
+
+18.04
+
+以下是一段CT02串口转发的记录
+[18:04:33.482]收←◆MCU-DBG:rx_irq=6896,at_tx=664,rx_arm_fail=0
+
+[18:04:34.114]收←◆MCU-SE:AT
+MCU-RE:OK
+MCU-SE:AT+MQTTCLIENT?
+MCU-RE:+MQTTCLIENT=""
+
+[18:04:34.479]收←◆MCU-DBG:rx_irq=6916,at_tx=666,rx_arm_fail=0
+
+[18:04:35.475]收←◆MCU-DBG:rx_irq=6916,at_tx=666,rx_arm_fail=0
+
+[18:04:35.624]收←◆MCU-SE:AT
+MCU-RE:OK
+MCU-SE:AT+MQTTCLIENT?
+MCU-RE:+MQTTCLIENT=""
+
+[18:04:36.235]收←◆MCU-RE:+MSUB: "ct02/ct02-001/down",190 bytes,"{"type":"gps.control","action":"status","source":"platform.manual.console","data":{"probeWindowSeconds":3},"requestId":"
+MCU-RE:b5484b47-4761-4a65-be90-4868136983fc","ts":"2026-04-22T10:04:36.924Z"}"
+
+[18:04:36.473]收←◆MCU-DBG:rx_irq=7168,at_tx=668,rx_arm_fail=0
+
+[18:04:37.469]收←◆MCU-DBG:rx_irq=7168,at_tx=668,rx_arm_fail=0
+
+[18:04:37.732]收←◆MCU-SE:AT
+MCU-RE:OK
+MCU-SE:AT+MQTTCLIENT?
+MCU-RE:+MQTTCLIENT=""
+
+[18:04:38.467]收←◆MCU-DBG:rx_irq=7188,at_tx=670,rx_arm_fail=0
+
+[18:04:39.242]收←◆MCU-SE:AT
+MCU-RE:OK
+MCU-SE:AT+MQTTCLIENT?
+MCU-RE:+MQTTCLIENT=""
+
+可以发现问题，就是在守护状态开头，因为要查询网络连接情况并开启GPS冷启动，这段指令，不要随便退出守护态，而是把初始化和冷启动的指令都发出去，如果一直有应答，那就一直进行，有应答一直喂狗，直到对于GPS定位信息给MCU开始解包，并继续喂狗逻辑。
+对于看门狗，可以用一个1.5s的TIM中断，进行时钟溢出中断的喂狗情况检查；
+对于USART，使用DMA模式进行收发；对于TIM/UART，都要在STM32L0ProJ\hal_template.ioc里面进行重新的设计设置
+
+另外，现在能够对收到MQTT down指令有所响应，至少灯会闪烁三下，但是至于up，MCU守护程序还是不会组织，所以还是有问题
+
+可以参考这个DX-CT02-A资料包 20250725\02 模块功能应用指导\DX-CT02-A&B_串口UART_应用指导.pdf 手册，如果你有一些技术问题
+
+19.11
+[19:10:57.548]收←◆MCU-DBG:rx_irq=1928,at_tx=82,rx_arm_fail=0,wd_timeout=19
+MCU-RE:+MSUB: "ct02/ct02-001/down",190 bytes,"{"type":"gps.control","action":"status","source":"platform.manual.console","data":{"probeWindowSeconds":3},"requestId":"
+MCU-RE:cc866c8e-855f-49cc-ab75-7516f843760b","ts":"2026-04-22T11:10:59.007Z"}"
+
+[19:10:58.017]收←◆MCU-SE:AT+MQTTSTATU
+MCU-RE:+MQTTSTATU: 1
+MCU-RE:OK
+MCU-SE:AT+MCONNECT=0,60
+
+[19:10:58.091]收←◆MCU-RE:OK
+MCU-RE:+MCONNECT: FAILURE
+
+[19:10:58.546]收←◆MCU-DBG:rx_irq=2105,at_tx=84,rx_arm_fail=0,wd_timeout=19
+
+[19:10:59.090]收←◆MCU-SE:AT+MQTTSTATU
+
+[19:10:59.112]收←◆MCU-RE:+MQTTSTATU: 1
+MCU-RE:OK
+MCU-SE:AT+MCONNECT=0,60
+
+[19:10:59.169]收←◆MCU-RE:OK
+MCU-RE:+MCONNECT: FAILURE
+
+[19:10:59.541]收←◆MCU-DBG:rx_irq=2156,at_tx=86,rx_arm_fail=0,wd_timeout=19
+
+[19:11:00.168]收←◆MCU-SE:AT+MQTTSTATU
+
+[19:11:00.191]收←◆MCU-RE:+MQTTSTATU: 1
+MCU-RE:OK
+MCU-SE:AT+MCONNECT=0,60
+
+[19:11:00.243]收←◆MCU-RE:OK
+MCU-RE:+MCONNECT: FAILURE 
+你不觉得以上的结果很慌謬吗？就是这个MCU明明都已经收到了AT02的Down包到MCU的数据包，但是还是不能顺利的进入守护状态，我怀疑是这个TIM定时器的延时太短了（会不会是这个问题，还是其他？主频现在32MHz），然后不停的就是wd_timeout，但是其实你通信往下发，就不会这样啊；
+
+干脆去除复杂的状态转换，就是上电，使劲发AT，AT如果有回应，说明本次开机的硬件链路没有问题，就放心往下开始初始化和GPS冷启动，最后进入到数据发包/解包的守护；因为绝大多数情况，我两个固件是硬件的电路连接，是能够保证稳定的；放弃状态的转换，就可以彻底解决状态的异常退出与判断
+
+19.28
+这个是MQTT平台对于GPS上报周期设置的Down包Json内容
+{
+  "type": "gps.control",
+  "action": "snapshot",
+  "source": "platform.manual.oneclick",
+  "data": {
+    "probeBeforeSeconds": 3,
+    "coldStartIfSilent": true,
+    "probeAfterSeconds": 3,
+    "gpsQuery": {
+      "command": "AT+GPSST",
+      "intervalSeconds": 30,
+      "maxAttempts": 30
+    }
+  }
+}
+但是我这个MCU程序似乎不能解析并重启up这种包，查看问题所在
+
+19.52
+
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching main.o(.bss.hdma_usart2_tx).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching main.o(.bss..L_MergedGlobals).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching main.o(.bss.htim2).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching ct02_guard.o(.bss.g_active_guard).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching stm32l0xx_hal.o(.bss.uwTick).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching system_stm32l0xx.o(.data.SystemCoreClock).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching strtok.o(.data).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching mvars.o(.data).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching mvars.o(.data).
+hal_template\hal_template.axf: Error: L6406E: No space in execution regions with .ANY selector matching errno.o(.data).
+hal_template\hal_template.axf: Error: L6407E: Sections of aggregate size 0xe8 bytes could not fit into .ANY selector(s). 不行啊，空间不够用啊，干脆这个临时的位置缓存，设计为30天前~7天前，各缓存一个位置（只有经纬度信息，所有的位置存储只有经纬度信息啊），7~3天前，各三个位置，3到1天前，各6个位置，1天内，每小时记录一个
+这样就会减轻位置存储的压力，或者可以使用EEPROM等其他片内资源，使得更加充裕
+
+
+21.26
+{
+  "type": "gps.control",
+  "action": "set_interval",
+  "source": "platform.manual.console",
+  "data": {
+    "intervalSeconds": 15
+  },
+  "requestId": "0bb92915-1a09-46d0-8775-1363f1c8a6a7",
+  "ts": "2026-04-22T13:26:10.580Z"
+}
+RAW
+{"type":"gps.control","action":"set_interval","source":"platform.manual.console","data":{"intervalSeconds":15},"requestId":"0bb92915-1a09-46d0-8775-1363f1c8a6a7","ts":"2026-04-22T13:26:10.580Z"}
+
+{
+  "type": "gps.control.ack",
+  "requestId": "0bb92915-1a09-46d0-8775-1363f1c8a6a7",
+  "action": "unknown",
+  "status": "failed",
+  "tsMs": 525203,
+  "error": {
+    "code": "invalid_json",
+    "message": "payload is not valid json"
+  }
+}
+RAW
+{"type":"gps.control.ack","requestId":"0bb92915-1a09-46d0-8775-1363f1c8a6a7","action":"unknown","status":"failed","tsMs":525203,"error":{"code":"invalid_json","message":"payload is not valid json"}}
+
+对于这种GPS时间间隔设置指令，这边的MCU守护程序似乎不能回应？分析问题
+
+4/23
+9.19
+MCU-DBG:rx_irq=1981,at_tx=28,rx_arm_fail=0,wd_timeout=3,rx_oflow=0,msub_ok=0,msub_fail=0
+MCU-SE:AT
+MCU-RE:OK
+MCU-RE:$GNRMC,,V,,,,,,,,,E,N*08
+MCU-RE:$GNVTG,,,,,,,,,N*2E
+MCU-RE:$GNGGA,,,,,,0,00,127.00,,,,,,*62
+MCU-RE:$GPGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*04
+MCU-RE:$BDGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*15
+MCU-RE:$GLGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*18
+MCU-RE:$GNGLL,,,,,,V,N*7A
+MCU-RE:$GNZDA,,,,,00,00*56
+MCU-RE:$GNGST,,,,,,,,*49
+MCU-RE:$GNTXT,01,01,02,ANTSTATUS=UNKNOWN*69
+MCU-RE:$HOSTSLEEP
+MCU-SE:AT
+MCU-RE:OK
+MCU-DBG:rx_irq=2324,at_tx=30,rx_arm_fail=0,wd_timeout=3,rx_oflow=0,msub_ok=0,msub_fail=0
+MCU-SE:AT
+MCU-RE:OK
+MCU-RE:$GNRMC,,V,,,,,,,,,E,N*08
+MCU-RE:$GNVTG,,,,,,,,,N*2E
+MCU-RE:$GNGGA,,,,,,0,00,127.00,,,,,,*62
+MCU-RE:$GPGSA,A,1,,,,,,,,,,,0,127.00,127.00,127.00*04
+MCU-RE:$BDGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*15
+MCU-RE:$GLGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*18
+MCU-RE:$GNGLL,,,,,,V,N*7A
+MCU-RE:$GNZDA,,,,,00,00*56
+MCU-RE:$GNGST,,,,,,,,*49
+MCU-RE:$GNTXT,01,01,02,ANTSTATUS=UNKNOWN*69
+MCU-RE:$HOSTSLEEP
+MCU-SE:AT
+MCU-RE:OK
+MCU-DBG:rx_irq=2731,at_tx=32,rx_arm_fail=0,wd_timeout=3,rx_oflow=0,msub_ok=0,msub_fail=0
+
+现在是这样，明明已经成功连接，GPS定位也已经启动，但是为什么没有up上传包，这个代码还有问题
+
+并且会出现异常退出到未连接态？但是其实硬件连接一直没问题，其实这个代码基本不用考虑MCU和CT02的断开问题，因为这两个在物理上是电路的硬件连接，很稳定，所以只要按照CT02_Serial_Software\ct02_con2mqtt.py 这边py等效测试脚本的逻辑运行即可；
+
+至于指示灯，确实是状态的一种体现，但是如果1.5s内，CT02向USART2有信息的回复（不管是什么，也不需要AT指令的OK校准），只要有回复，指示灯状态就是常暗，然后发包up闪两下（0.1s），处理down包闪三下(0.2s)
+
+这套MCU代码，已经修改多次，可能会比较混乱，去掉逻辑冲突和无用的代码
+
+9.58
+
+MCU-SE:AT+MSUB?
+MCU-RE:+MSUB:"",0
+MCU-RE:+MSUB:"",0
+MCU-RE:+MSUB:"",0
+MCU-RE:OK
+MCU-SE:AT+MSUB="ct02/ct02-001/down",0
+MCU-RE:ERROR=102
+MCU-DBG:phase=5,rx_irq=80,at_tx=5,rx_arm_fail=0,wd_timeout=0,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-SE:AT+MSUB?
+MCU-RE:+MSUB:"",0
+MCU-SE:AT+MSUB="ct02/ct02-001/down",0
+MCU-RE:+MSUB:"",0
+MCU-RE:+MSUB:"",0
+MCU-RE:OK
+MCU-RE:ERROR=102
+MCU-SE:AT+MSUB?
+MCU-RE:+MSUB:"",0
+MCU-SE:AT+MSUB="ct02/ct02-001/down",0
+MCU-RE:+MSUB:"",0
+MCU-RE:+MSUB:"",0
+MCU-RE:OK
+MCU-RE:ERROR=102
+MCU-DBG:phase=5,rx_irq=186,at_tx=9,rx_arm_fail=0,wd_timeout=0,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-SE:AT+MSUB?
+MCU-RE:+MSUB:"",0
+MCU-SE:AT+MSUB="ct02/ct02-001/down",0
+MCU-RE:+MSUB:"",0
+MCU-RE:+MSUB:"",0
+MCU-RE:OK
+MCU-RE:ERROR=102
+MCU-DBG:phase=5,rx_irq=239,at_tx=11,rx_arm_fail=0,wd_timeout=0,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-SE:AT+MSUB?
+MCU-RE:+MSUB:"",0
+MCU-SE:AT+MSUB="ct02/ct02-001/down",0
+MCU-RE:+MSUB:"",0
+MCU-RE:+MSUB:"",0
+MCU-RE:OK
+MCU-RE:ERROR=102
+MCU-DBG:phase=5,rx_irq=292,at_tx=13,rx_arm_fail=0,wd_timeout=0,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-SE:AT+MSUB?
+MCU-RE:+MSUB:"",0
+MCU-RE:+MSUB:"",0
+MCU-RE:+MSUB:"",0
+MCU-RE:OK
+MCU-SE:AT+MSUB="ct02/ct02-001/down",0
+MCU-RE:ERROR=102
+MCU-DBG:phase=5,rx_irq=345,at_tx=15,rx_arm_fail=0,wd_timeout=0,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-SE:AT+MSUB?
+MCU-RE:+MSUB:"",0
+MCU-RE:+MSUB:"",0
+MCU-RE:+MSUB:"",0
+MCU-RE:OK
+MCU-SE:AT+MSUB="ct02/ct02-001/down",0
+MCU-RE:ERROR=102
+MCU-DBG:phase=5,rx_irq=398,at_tx=17,rx_arm_fail=0,wd_timeout=0,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-SE:AT+MSUB?
+MCU-RE:+MSUB:"",0
+MCU-SE:AT+MSUB="ct02/ct02-001/down",0
+MCU-RE:+MSUB:"",0
+MCU-RE:+MSUB:"",0
+MCU-RE:OK
+MCU-RE:ERROR=102
+MCU-RE:Online Reg OK!
+MCU-SE:AT+MSUB?
+MCU-RE:+MSUB:"",0
+MCU-SE:AT+MSUB="ct02/ct02-001/down",0
+MCU-RE:+MSUB:"",0
+MCU-RE:+MSUB:"",0
+MCU-RE:OK
+MCU-RE:ERROR=102
+MCU-DBG:phase=5,rx_irq=522,at_tx=21,rx_arm_fail=0,wd_timeout=0,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-SE:AT+MSUB?
+MCU-RE:+MSUB:"",0
+MCU-SE:AT+MSUB="ct02/ct02-001/down",0
+MCU-RE:+MSUB:"",0
+MCU-RE:+MSUB:"",0
+MCU-RE:OK
+MCU-RE:ERROR=102
+MCU-DBG:phase=5,rx_irq=575,at_tx=23,rx_arm_fail=0,wd_timeout=0,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-SE:AT+MSUB?
+MCU-RE:+MSUB:"",0
+MCU-SE:AT+MSUB="ct02/ct02-001/down",0
+MCU-RE:+MSUB:"",0
+MCU-RE:+MSUB:"",0
+MCU-RE:OK
+MCU-RE:ERROR=102
+MCU-DBG:phase=5,rx_irq=628,at_tx=25,rx_arm_fail=0,wd_timeout=0,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-SE:AT+MSUB?
+MCU-RE:+MSUB:"",0
+MCU-SE:AT+MSUB="ct02/ct02-001/down",0
+MCU-RE:+MSUB:"",0
+MCU-RE:+MSUB:"",0
+MCU-RE:OK
+MCU-RE:ERROR=102
+MCU-DBG:phase=5,rx_irq=681,at_tx=27,rx_arm_fail=0,wd_timeout=0,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-SE:AT+MSUB?
+MCU-DBG:phase=5,rx_irq=681,at_tx=28,rx_arm_fail=0,wd_timeout=1,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-DBG:phase=5,rx_irq=681,at_tx=28,rx_arm_fail=0,wd_timeout=1,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-DBG:phase=5,rx_irq=681,at_tx=28,rx_arm_fail=0,wd_timeout=2,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-DBG:phase=5,rx_irq=681,at_tx=28,rx_arm_fail=0,wd_timeout=3,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-RE:+MCONNECT: SUCCESS
+MCU-RE:+MSUB:"ct02/ct02-001/down",0
+MCU-RE:+MSUB:"ct02/=/down",0
+MCU-RE:+MSUB:"ct02/ct02-02-001/down",0
+MCU-RE:OK
+MCU-SE:AT+PWRM=1
+MCU-RE:OK
+MCU-SE:AT+MGPSC=0
+MCU-RE:+CME ERROR: 4
+MCU-RE:+CME ERROR: 4
+MCU-SE:AT+GPSMODE=3
+MCU-RE:+CME ERROR: 4
+MCU-SE:AT+MGPSC=1
+MCU-RE:OK
+MCU-SE:AT+GPSST
+MCU-RE:+GPSST: 0, 0, 0.000000, 0.000000, 0.000000, 0.000000, 00; 
+MCU-RE:OK
+MCU-RE: 0.000000, 00; 
+MCU-RE:OK
+MCU-DBG:phase=7,rx_irq=953,at_tx=33,rx_arm_fail=0,wd_timeout=3,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-DBG:phase=7,rx_irq=953,at_tx=33,rx_arm_fail=0,wd_timeout=3,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-DBG:phase=7,rx_irq=953,at_tx=33,rx_arm_fail=0,wd_timeout=4,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-RE:+GPS: sPS: start up success.
+MCU-RE:tart up success.
+MCU-DBG:phase=7,rx_irq=1003,at_tx=33,rx_arm_fail=0,wd_timeout=4,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-RE:$GNRMC,,V,,,,,,,,,E,N*08
+MCU-RE:$GNVTG,,,,,,,,,N*2E
+MCU-RE:$GNGGA,,,,,,0,00,127.00,,,,,,*62
+MCU-RE:$GPGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*04
+MCU-RE:$BDGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*15
+MCU-RE:$GLGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*18
+MCU-RE:$GNGLL,,,,,,V,N*7A
+MCU-RE:$GNZDA,,,,,00,00*56
+MCU-RE:$GNGST,,,,,,,,*49
+MCU-RE:$GNTXT,01,01,02,ANTSTATUS=UNKNOWN*69
+MCU-RE:$UTCPara,-0.0000000009,0.0000000000,111,137,0,18,18,7*47
+MCU-RE:$HOSTSLEEP
+MCU-DBG:phase=7,rx_irq=1397,at_tx=33,rx_arm_fail=0,wd_timeout=4,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-RE:$GNRMC,,V,,,,,,,,,E,N*08
+MCU-RE:$GNVTG,,,,,,,,,N*2E
+MCU-RE:$GNGGA,,,,,,0,00,127.00,,,,,,*62
+MCU-RE:$GPGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*04
+MCU-RE:$BDGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*15
+MCU-RE:$GLGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*18
+MCU-RE:$GNGLL,,,,,,V,N*7A
+MCU-RE:$GNZDA,,,,,00,00*56
+MCU-RE:$GNGST,,,,,,,,*49
+MCU-RE:$GNTXT,01,01,02,ANTSTATUS=UNKNOWN*69
+MCU-RE:$AIDINFO,0x0,0x0,0x0,0x0,0x0,0x0,0x0*16
+MCU-RE:$HOSTSLEEP
+MCU-DBG:phase=7,rx_irq=1774,at_tx=33,rx_arm_fail=0,wd_timeout=4,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-RE:$GNRMC,,V,,,,,,,,,E,N*08
+MCU-RE:$GNVTG,,,,,,,,,N*2E
+MCU-RE:$GNGGA,,,,,,0,00,127.00,,,,,,*62
+MCU-RE:$GPGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*04
+MCU-RE:$BDGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*15
+MCU-RE:$GLGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*18
+MCU-RE:$GNGLL,,,,,,V,N*7A
+MCU-RE:$GNZDA,,,,,00,00*56
+MCU-RE:$GNGST,,,,,,,,*49
+MCU-RE:$GNTXT,01,01,02,ANTSTATUS=UNKNOWN*69
+MCU-RE:$HOSTSLEEP
+MCU-DBG:phase=7,rx_irq=2109,at_tx=33,rx_arm_fail=0,wd_timeout=4,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-RE:$GNRMC,,V,,,,,,,,,E,N*08
+MCU-RE:$GNVTG,,,,,,,,,N*2E
+MCU-RE:$GNGGA,,,,,,0,00,127.00,,,,,,*62
+MCU-RE:$GPGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*04
+MCU-RE:$BDGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*15
+MCU-RE:$GLGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*18
+MCU-RE:$GNGLL,,,,,,V,N*7A
+MCU-RE:$GNZDA,,,,,00,00*56
+MCU-RE:$GNGST,,,,,,,,*49
+MCU-RE:$GNTXT,01,01,02,ANTSTATUS=UNKNOWN*69
+MCU-RE:$HOSTSLEEP
+MCU-DBG:phase=7,rx_irq=2444,at_tx=33,rx_arm_fail=0,wd_timeout=4,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-RE:$GNRMC,,V,,,,,,,,,E,N*08
+MCU-RE:$GNVTG,,,,,,,,,N*2E
+MCU-RE:$GNGGA,,,,,,N*2E
+MCU-RE:$GNGGA,,,,,,0,00,127.00,,,,,,*62
+MCU-RE:$GPGSA,A,1,,,,,,,,,0,00,127.00,,,,,,*62
+MCU-RE:$GPGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*04
+MCU-RE:$BDGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*15
+MCU-RE:$GLGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*18
+MCU-RE:$GNGLL,,,,,,V,N*7A
+MCU-RE:$GNZDA,,,,,00,00*56
+MCU-RE:$GNGST,,,,,,,,*49
+MCU-RE:$GNTXT,01,01,02,ANTSTATUS=UNKNOWN*69
+MCU-RE:$HOSTSLEEP
+MCU-DBG:phase=7,rx_irq=2838,at_tx=33,rx_arm_fail=0,wd_timeout=4,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+MCU-RE:$GNRMC,,V,,,,,,,,,E,N*08
+MCU-RE:$GNVTG,,,,,,,,,N*2E
+MCU-RE:$GNGGA,,,,,,0,00,127.00,,,,,,*62
+MCU-RE:$GPGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*04
+MCU-RE:$BDGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*15
+MCU-RE:$GLGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*18
+MCU-RE:$GNGLL,,,,,,V,N*7A
+MCU-RE:$GNZDA,,,,,00,00*56
+MCU-RE:$GNGST,,,,,,,,*49
+MCU-RE:$GNTXT,01,01,02,ANTSTATUS=UNKNOWN*69
+MCU-RE:$HOSTSLEEP
+MCU-DBG:phase=7,rx_irq=3173,at_tx=33,rx_arm_fail=0,wd_timeout=4,rx_oflow=0,periodic=0,msub_ok=0,msub_fail=0
+还是会自动卡死，就是上电后几十秒，就指示灯常亮了，但是其实我的硬件连接没有任何问题；以上是完整的上电后的USART1的转发记录，到底是什么问题
+
+
+15.07 
+这套MCU代码，对于初始化/冷启动/GPS定位up包上传至MQTT平台这些已经可以很好的响应，但是对于MQTT平台Down的包，还是没有合适的响应，比如以下的情况
+
+ct02/ct02-001/ack
+接收
+接收时间 · 2026/4/23 15:07:18
+JSON
+-
+RAW
+{"type":"gps.control.ack","requestId":"4e3171f6-afa2-4e79-97d4-e9285193e490","action":"unknown","status":"failed","ts":"boot+31.077s","tsMs":31077,"error":{"code":"invalid_json","message":"payload is not valid json: {"type":"gps.control","action":"status","}}
+
+ct02/ct02-001/down
+发出
+发出时间 · 2026/4/23 15:07:18
+JSON
+{
+  "type": "gps.control",
+  "action": "status",
+  "source": "platform.manual.console",
+  "data": {
+    "probeWindowSeconds": 3
+  },
+  "requestId": "4e3171f6-afa2-4e79-97d4-e9285193e490",
+  "ts": "2026-04-23T07:07:18.600Z"
+}
+RAW
+{"type":"gps.control","action":"status","source":"platform.manual.console","data":{"probeWindowSeconds":3},"requestId":"4e3171f6-afa2-4e79-97d4-e9285193e490","ts":"2026-04-23T07:07:18.600Z"}
+
+似乎是Down包再响应的up包，格式就有一些问题，对照CT02_PySerial_Uptest\ct02_downlink_guard.py 完全成功的一套py代码，改造STM32L0ProJ MCU 等效控制的代码，修复Down的up响应问题
+
+15.50
+
+ct02/ct02-001/ack
+ct02/ct02-001/ack
+接收
+接收时间 · 2026/4/23 15:51:58
+JSON
+{
+  "type": "gps.control.ack",
+  "requestId": "078076de-396a-4d5e-a3ad-169edda2e878",
+  "action": "set_interval",
+  "status": "failed",
+  "ts": "boot+31.818s",
+  "tsMs": 31818,
+  "error": {
+    "code": "invalid_json",
+    "message": "payload is not valid json: \"{\"type\":\"gps.control\",\"action\":\"set_interval\",\"sour"
+  }
+}
+RAW
+{"type":"gps.control.ack","requestId":"078076de-396a-4d5e-a3ad-169edda2e878","action":"set_interval","status":"failed","ts":"boot+31.818s","tsMs":31818,"error":{"code":"invalid_json","message":"payload is not valid json: \"{\"type\":\"gps.control\",\"action\":\"set_interval\",\"sour"}}
+ct02/ct02-001/down
+发出
+发出时间 · 2026/4/23 15:51:58
+JSON
+{
+  "type": "gps.control",
+  "action": "set_interval",
+  "source": "platform.manual.console",
+  "data": {
+    "intervalSeconds": 15
+  },
+  "requestId": "078076de-396a-4d5e-a3ad-169edda2e878",
+  "ts": "2026-04-23T07:51:58.137Z"
+}
+RAW
+{"type":"gps.control","action":"set_interval","source":"platform.manual.console","data":{"intervalSeconds":15},"requestId":"078076de-396a-4d5e-a3ad-169edda2e878","ts":"2026-04-23T07:51:58.137Z"}
+
+还是不太行，我感觉，就是还是不能解析一些指令；根据这个STM32L0ProJ\note\mqtt_gps_down_up_format.txt 指令格式的说明书，查看现有MCU守护程序的问题
+
+18.13
+
+这个定位的最终结果，做一个固定偏移量的修正，就是我的真实位置，其实在
+
+120.33865483569734E,30.318226610244597N
+
+但是这个GPS定位器有略微的偏移，移到了
+
+30.318338N, 120.338776E，做这个的固定修正
+
+
+
+20.08
+
+
+MCU-DBG:phase=7,rx_irq=22129,at_tx=20,rx_arm_fail=0,wd_timeout=8,rx_oflow=0,periodic=5,msub_ok=0,msub_fail=0
+MCU-RE:$GNRMC,,V,,,,,,,,,E,N*08
+MCU-RE:$GNVTG,,,,,,,,,N*2E
+MCU-RE:$GNGGA,,,,,,0,00,127.00,,,,,,*62
+MCU-RE:$GPGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*04
+MCU-RE:$BDGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*15
+MCU-RE:$GLGSA,A,1,,,,,,,,,,,,,127.00,127.00,127.00*18
+MCU-RE:$GNGLL,,,,,,V,N*7A
+MCU-RE:$GNZDA,,,,,00,00*56
+MCU-RE:$GNGST,,,,,,,,*49
+MCU-RE:$GNTXT,01,01,02,ANTSTATUS=UNKNOWN*69
+MCU-RE:$HOSTSLEEP
+MCU-DBG:phase=7,rx_irq=22464,at_tx=20,rx_arm_fail=0,wd_timeout=8,rx_oflow=0,periodic=5,msub_ok=0,msub_fail=0
+MCU-SE:AT+MPUBEX="ct02/ct02-001/gps",0,0,184
+MCU-SE:{"type":"gps.report","source":"guard.periodic","requestId":"","ts":"boot+85.187s","tsMs":85187,"fixStatus":0,"lat":0.000000,"ln
+MCU-SE:g":0.000000,"alt":0.00,"cn":0,"reason":"periodic_no_fix"}
+MCU-RE:OK
+MCU-SE:AT+MPUBEX="ct02/ct02-001/up",0,0,196
+MCU-RE:+MPUBEX: SUCCESS
+MCU-DBG:phase=7,rx_irq=22496,at_tx=22,rx_arm_fail=0,wd_timeout=8,rx_oflow=0,periodic=6,msub_ok=0,msub_fail=0
+MCU-DBG:phase=7,rx_irq=22496,at_tx=22,rx_arm_fail=0,wd_timeout=9,rx_oflow=0,periodic=6,msub_ok=0,msub_fail=0
+MCU-DBG:phase=7,rx_irq=22496,at_tx=22,rx_arm_fail=0,wd_timeout=9,rx_oflow=0,periodic=6,msub_ok=0,msub_fail=0
+MCU-DBG:phase=7,rx_irq=22496,at_tx=22,rx_arm_fail=0,wd_timeout=10,rx_oflow=0,periodic=6,msub_ok=0,msub_fail=0
+MCU-DBG:phase=7,rx_irq=22496,at_tx=22,rx_arm_fail=0,wd_timeout=11,rx_oflow=0,periodic=6,msub_ok=0,msub_fail=0
+MCU-DBG:phase=7,rx_irq=22496,at_tx=22,rx_arm_fail=0,wd_timeout=11,rx_oflow=0,periodic=6,msub_ok=0,msub_fail=0
+MCU-DBG:phase=7,rx_irq=22496,at_tx=22,rx_arm_fail=0,wd_timeout=12,rx_oflow=0,periodic=6,msub_ok=0,msub_fail=0
+MCU-DBG:phase=7,rx_irq=22496,at_tx=22,rx_arm_fail=0,wd_timeout=13,rx_oflow=0,periodic=6,msub_ok=0,msub_fail=0
+MCU-DBG:phase=7,rx_irq=22496,at_tx=22,rx_arm_fail=0,wd_timeout=13,rx_oflow=0,periodic=6,msub_ok=0,msub_fail=0
+MCU-DBG:phase=7,rx_irq=22496,at_tx=22,rx_arm_fail=0,wd_timeout=14,rx_oflow=0,periodic=6,msub_ok=0,msub_fail=0
+MCU-SE:AT+MPUBEX="ct02/ct02-001/gps",0,0,184
+MCU-RE:ERROR=203
+MCU-SE:AT+MCONNECT=0,60
+MCU-RE:OK
+MCU-RE:+MCONNECT: FAILURE
+MCU-DBG:phase=4,rx_irq=22537,at_tx=24,rx_arm_fail=0,wd_timeout=14,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-DBG:phase=4,rx_irq=22537,at_tx=24,rx_arm_fail=0,wd_timeout=14,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-DBG:phase=4,rx_irq=22537,at_tx=24,rx_arm_fail=0,wd_timeout=15,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-SE:AT+MCONNECT=0,60
+MCU-RE:OK
+MCU-RE:+MCONNECT: FAILURE
+MCU-DBG:phase=4,rx_irq=22565,at_tx=25,rx_arm_fail=0,wd_timeout=15,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-DBG:phase=4,rx_irq=22565,at_tx=25,rx_arm_fail=0,wd_timeout=15,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-DBG:phase=4,rx_irq=22565,at_tx=25,rx_arm_fail=0,wd_timeout=16,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-SE:AT+MCONNECT=0,60
+MCU-RE:OK
+MCU-RE:+MCONNECT: FAILURE
+MCU-DBG:phase=4,rx_irq=22593,at_tx=26,rx_arm_fail=0,wd_timeout=16,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-DBG:phase=4,rx_irq=22593,at_tx=26,rx_arm_fail=0,wd_timeout=16,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-DBG:phase=4,rx_irq=22593,at_tx=26,rx_arm_fail=0,wd_timeout=17,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-SE:AT+MCONNECT=0,60
+MCU-RE:OK
+MCU-RE:+MCONNECT: FAILURE
+MCU-DBG:phase=4,rx_irq=22621,at_tx=27,rx_arm_fail=0,wd_timeout=17,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-DBG:phase=4,rx_irq=22621,at_tx=27,rx_arm_fail=0,wd_timeout=17,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-DBG:phase=4,rx_irq=22621,at_tx=27,rx_arm_fail=0,wd_timeout=18,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-SE:AT+MCONNECT=0,60
+MCU-RE:OK
+MCU-RE:+MCONNECT: FAILURE
+MCU-DBG:phase=4,rx_irq=22649,at_tx=28,rx_arm_fail=0,wd_timeout=18,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-DBG:phase=4,rx_irq=22649,at_tx=28,rx_arm_fail=0,wd_timeout=18,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-DBG:phase=4,rx_irq=22649,at_tx=28,rx_arm_fail=0,wd_timeout=19,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-SE:AT+MCONNECT=0,60
+MCU-RE:OK
+MCU-RE:+MCONNECT: FAILURE
+MCU-DBG:phase=4,rx_irq=22677,at_tx=29,rx_arm_fail=0,wd_timeout=19,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-DBG:phase=4,rx_irq=22677,at_tx=29,rx_arm_fail=0,wd_timeout=19,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-DBG:phase=4,rx_irq=22677,at_tx=29,rx_arm_fail=0,wd_timeout=20,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+MCU-SE:AT+MCONNECT=0,60
+MCU-RE:OK
+MCU-RE:+MCONNECT: FAILURE
+MCU-DBG:phase=4,rx_irq=22705,at_tx=30,rx_arm_fail=0,wd_timeout=20,rx_oflow=0,periodic=7,msub_ok=0,msub_fail=0
+这一部分内容是MCU串口转发，从定位发包到断线不发包的转换串口记录，这个是怎么回事，为什么py不会出现这个问题，而MCU程序会
+
+4/24
+10.55
+
+ct02/ct02-001/ack
+接收
+接收时间 · 2026/4/24 10:53:20
+JSON
+{
+  "type": "gps.control.ack",
+  "requestId": "e1826bfd-5fb2-400c-ac64-5ef25d556b2b",
+  "action": "set_interval",
+  "status": "failed",
+  "ts": "boot+35.227s",
+  "tsMs": 35227,
+  "error": {
+    "code": "invalid_json",
+    "message": "payload is not valid json: \"{\"type\":\"gps.control\",\"action\":\"set_interval\",\"sour"
+  }
+}
+
+ct02/ct02-001/down
+发出
+发出时间 · 2026/4/24 10:53:20
+JSON
+{
+  "type": "gps.control",
+  "action": "set_interval",
+  "source": "platform.manual.console",
+  "data": {
+    "intervalSeconds": 15
+  },
+  "requestId": "e1826bfd-5fb2-400c-ac64-5ef25d556b2b",
+  "ts": "2026-04-24T02:53:20.152Z"
+}
+
+4/25
+9.19
+
+根据 CT02_PySerial_Uptest\ct02_downlink_guard.py 做的GPS校准和固定偏移校准后的发包，并根据这个py程序的说明书CT02_PySerial_Uptest\GuardWorkNote.txt ，改造MCU的 STM32L0ProJ 程序也进行这个GPS校准和固定偏移的校准后发包；
+
+先弄清这个新的校准机制，再进行编程改进
+
+10.53
+
+对于MCU代码（在STM32L0Proj文件夹），利用USART1(中断模式，波特率115200)（检查一下STM32L0ProJ\hal_template.ioc的初始化有无问题），写一个向串口屏发送经纬度的机制（间隔时间和发包一致，向MQTT up的时候，也向USART1的串口屏发送经纬度），经纬度的格式如下：2. MCU对于串口屏的发送指令（串口STR）
+2.1 对于纬度的发送
+纬度值（30.000000度为例，必须跟着6个零，才能到个位）：x0.val=30000000
+纬度类型（北纬为例）： t8.txt="N"
+2.2 对于经度的发送
+纬度值（120.000000度为，，必须跟着6个零，才能到个位）：x1.val=120000000 
+纬度类型（东经为例）： t9.txt="E"
+
+14.05
+
+已经开始USART1的发送，但是现在会出现发送后，屏幕无法解析的问题，我的屏幕是TJC的串口屏，每次修改一个数值，就是要帧尾添加0xFF 0xFF 0xFF ，这样串口屏才能解析，且一次只能改动一个值，具体示例如下：2. MCU对于串口屏的发送指令
+2.1 对于纬度的发送
+纬度值（30.000000度为例，必须跟着6个零，才能到个位）：x0.val=30000000
+HEX示例：78 30 2E 76 61 6C 3D 33 30 30 30 30 30 30 30 ff ff ff
+纬度类型（北纬为例）： t8.txt="N"
+HEX示例：74 38 2E 74 78 74 3D 22 4E 22 ff ff ff
+2.2 对于经度的发送
+纬度值（120.000000度为，，必须跟着6个零，才能到个位）：x1.val=120000000 
+HEX示例：78 31 2E 76 61 6C 3D 31 32 30 30 30 30 30 30 30 ff ff ff
+纬度类型（东经为例）： t9.txt="E"
+HEX示例：74 39 2E 74 78 74 3D 22 45 22 ff ff ff
+
+
+4/27
+10.57
+这个MCU和串口屏的链路（经纬度的发送机制），已经通了（USART1）；现在在MCU里面，添加一个开机时间的计算（精确到分钟即可），然后发送给串口屏（USART1）,一分钟发送一次，然后以下是发送的格式
+
+2.5 对于开机时间
+对于开机的小时数（发送已经开机123h的示例）：n3.val=123
+对于开机的秒数（发送已经开机30min的示例）：n4.val=30
+
+11.19
+
+很好，现在这个串口继续添加东西，就是添加 开机后，已经上报的定位数量，可以在发GPS包（MQTT和串口）后，进行一个增加，发送格式如下：
+2.4 对于开机后已上报定位数量
+发送10000的示例：n2.val=10000
+
+13.55
+
+很好，继续对串口发送添加东西，在串口发送已上报道串口屏的GPS发包数量后，对GPS的间隔秒数也进行发送，通过USART1
+发送格式如下：
+2.6 对于自动发送GPS包的时间间隔发送指令
+对于10秒间隔的发送示例：
+STR：n0.val=10
+HEX：6E 30 2E 76 61 6C 3D 31 30 ff ff ff
+
+14.09
+很好，在此基础上，添加一个串口的GPS间隔秒数的MCU-USART1中断接收机制，就是串口屏的使用用户，会去设置想要的串口，MCU需要解析这个设置值（10s~65535s）,在MCU中修改响应的参数，并且向MQTT平台发包，注意修改的就是向串口屏/MQTT发送的间隔值，有且一个统一的参数值，以下是MCU-RX的解包格式
+1. 串口屏对MCU的发送指令 （串口HEX）
+1.1 对于GPS上报时间的设置
+帧头: 0x05 帧尾：0x26
+数据包：
+操作识别码：0x52  时间设置值：0xXX 0xXX (小端模式)
+如串口屏向MCU发送，设置发送间隔为10s的指令，向MCU发送为
+05 52 0A 00 26 
+如果是60000s间隔，发送为
+05 52 60 EA 26 
+
+14.29
+我认为现在没有将这个串口屏向MCU的修改发GPS包时间间隔的链路畅通，现在的问题，比如我设置了20s，但是在一次发GPS包之后，还是原来的时间间隔值，这是怎么回事？
+
+
+15.23
+添加新的发送到串口屏的功能，就是以下内容：
+2.7 对于MQTT IP Address 的发送
+STR示例：t11.txt="120.26.111.75:6011"
+HEX示例：74 31 31 2E 74 78 74 3D 22 31 32 30 2E 32 36 2E 31 31 31 2E 37 35 3A 36 30 31 31 22 ff ff ff
+若是连接成功的状态，发送： t11.bco=1032
+若当前没有连接，发送：t11.bco=2178
+
+2.8 对于Device ID 的发送
+STR示例：t13.txt="CT02-002"
+HEX示例：74 31 33 2E 74 78 74 3D 22 43 54 30 32 2D 30 30 32 22 ff ff ff
+这些发送，和定位发送一批，在其他发好之后，发给串口屏
+
+15.53
+
+对于这个STM32L0，评估一下是否还有Flash空间能否进行EEPROM的存储，我只需要存储一下当前设备的GPS向上发送间隔（多少秒，10~65535秒），其他不存储
+
+16.00
+
+上电时从 DATA_EEPROM_BASE 读一个记录。
+校验通过且范围在 10~65535，就覆盖 cfg.report_interval_s。
+HMI 串口屏或 MQTT down 修改间隔成功后，只在值变化时写 EEPROM。
+不要每次 GPS 上报都写，避免无意义磨损。
+EEPROM 写操作放在主循环/状态机里做，不要在 USART1 中断回调里直接写。

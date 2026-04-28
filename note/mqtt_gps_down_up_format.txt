@@ -1,0 +1,355 @@
+CT02 MQTT 平台 GPS 控制协议 Down/Up 格式书
+版本日期: 2026-04-23
+适用范围: MQTTNet_4G_2604 当前代码（src/index.js + CT02_Con2MQTT/PyTestUP/SerialGuard）
+
+==================================================
+1. MQTT 主题定义
+==================================================
+下发（平台 -> 设备守护）
+- ct02/{deviceId}/down
+
+上行（设备守护 -> 平台）
+- ct02/{deviceId}/ack   命令应答（gps.control.ack）
+- ct02/{deviceId}/up    状态摘要（gps.status）
+- ct02/{deviceId}/gps   定位详情（gps.report）
+
+说明:
+- 本文重点是 gps.control 的四类动作: status / enable / disable / set_interval
+- requestId 建议全局唯一（UUID），平台用 requestId 进行命令匹配
+
+
+==================================================
+2. Down 包通用格式（发送到 /down）
+==================================================
+{
+  "type": "gps.control",
+  "action": "status|enable|disable|set_interval",
+  "source": "platform.manual.console",
+  "data": { ... },
+  "requestId": "<uuid>",
+  "ts": "2026-04-23T08:00:00.000Z"
+}
+
+字段约束:
+- type: 固定 gps.control
+- action: 必须是 status / enable / disable / set_interval
+- requestId: 强烈建议必填（用于 ACK 和命令追踪）
+- ts: 建议 ISO8601 UTC 时间字符串
+- data: 对象；不同 action 的 data 见后文
+
+重要:
+- payload 必须是“标准 JSON 文本”，不要二次转义或拼接错误
+- set_interval 的 intervalSeconds 允许范围 10~3600（守护端会 clamp 到此范围）
+
+
+==================================================
+3. 四类 Down 指令示例
+==================================================
+3.1 查看 GPS 状态（status）
+{
+  "type": "gps.control",
+  "action": "status",
+  "source": "platform.manual.console",
+  "data": {
+    "probeWindowSeconds": 3
+  },
+  "requestId": "11111111-1111-1111-1111-111111111111",
+  "ts": "2026-04-23T08:00:00.000Z"
+}
+
+3.2 开启 GPS（enable）
+{
+  "type": "gps.control",
+  "action": "enable",
+  "source": "platform.manual.console",
+  "data": {
+    "coldStart": true
+  },
+  "requestId": "22222222-2222-2222-2222-222222222222",
+  "ts": "2026-04-23T08:00:10.000Z"
+}
+
+3.3 关闭 GPS（disable）
+{
+  "type": "gps.control",
+  "action": "disable",
+  "source": "platform.manual.console",
+  "data": {},
+  "requestId": "33333333-3333-3333-3333-333333333333",
+  "ts": "2026-04-23T08:00:20.000Z"
+}
+
+3.4 设置 GPS 上报间隔（set_interval）
+{
+  "type": "gps.control",
+  "action": "set_interval",
+  "source": "platform.manual.console",
+  "data": {
+    "intervalSeconds": 15
+  },
+  "requestId": "44444444-4444-4444-4444-444444444444",
+  "ts": "2026-04-23T08:00:30.000Z"
+}
+
+约束:
+- intervalSeconds 有效范围 10~3600
+- 小于 10 会按 10 处理；大于 3600 会按 3600 处理
+
+
+==================================================
+4. 期望 Up 包正确格式
+==================================================
+4.1 ACK 通道（/ack）通用 JSON
+{
+  "type": "gps.control.ack",
+  "requestId": "<与down一致>",
+  "action": "status|enable|disable|set_interval",
+  "status": "received|running|done|failed",
+  "ts": "2026-04-23T08:00:31.000Z",
+  "data": { ... },
+  "error": { "code": "...", "message": "..." }
+}
+
+说明:
+- data 和 error 按需出现
+- 典型状态流:
+  - status: received -> done
+  - enable: received -> running -> done
+  - disable: received -> done
+  - set_interval: received -> done
+
+
+4.2 status 的期望上行
+(1) ACK received (/ack)
+{
+  "type": "gps.control.ack",
+  "requestId": "11111111-1111-1111-1111-111111111111",
+  "action": "status",
+  "status": "received",
+  "ts": "2026-04-23T08:00:01.000Z"
+}
+
+(2) 状态摘要 (/up)
+{
+  "type": "gps.status",
+  "source": "guard.control.status",
+  "action": "status",
+  "ts": "2026-04-23T08:00:02.000Z",
+  "fixStatus": 0,
+  "message": "status_snapshot",
+  "intervalSeconds": 10,
+  "gpsEnabled": true,
+  "requestId": "11111111-1111-1111-1111-111111111111",
+  "heartbeatDetected": true,
+  "gpsMode": 3,
+  "gpsSwitch": 1,
+  "cacheRows": 1029,
+  "cacheBytes": 263418
+}
+
+(3) ACK done (/ack)
+{
+  "type": "gps.control.ack",
+  "requestId": "11111111-1111-1111-1111-111111111111",
+  "action": "status",
+  "status": "done",
+  "ts": "2026-04-23T08:00:03.000Z",
+  "data": {
+    "heartbeatDetected": true,
+    "lineCount": 33,
+    "gpsEnabled": true,
+    "gpsMode": 3,
+    "gpsSwitch": 1,
+    "reportIntervalSeconds": 10,
+    "cache": { "rows": 1029, "bytes": 263418 },
+    "fixStatus": 0
+  }
+}
+
+
+4.3 enable 的期望上行
+(1) ACK received (/ack)
+{
+  "type": "gps.control.ack",
+  "requestId": "22222222-2222-2222-2222-222222222222",
+  "action": "enable",
+  "status": "received",
+  "ts": "2026-04-23T08:00:11.000Z"
+}
+
+(2) ACK running (/ack)
+{
+  "type": "gps.control.ack",
+  "requestId": "22222222-2222-2222-2222-222222222222",
+  "action": "enable",
+  "status": "running",
+  "ts": "2026-04-23T08:00:12.000Z",
+  "data": {
+    "stage": "enable_sequence",
+    "coldStart": true
+  }
+}
+
+(3) 定位详情 (/gps) 可能 fix 或 no-fix
+{
+  "type": "gps.report",
+  "source": "guard.control.enable",
+  "ts": "2026-04-23T08:00:13.000Z",
+  "fixStatus": 0,
+  "lat": 0.0,
+  "lng": 0.0,
+  "alt": 0.0,
+  "cn": 0,
+  "coordSystem": "wgs84",
+  "rawLatWgs84": 0.0,
+  "rawLngWgs84": 0.0,
+  "reason": "enable_done_no_fix",
+  "requestId": "22222222-2222-2222-2222-222222222222"
+}
+
+(4) 状态摘要 (/up)
+{
+  "type": "gps.status",
+  "source": "guard.control.enable",
+  "action": "enable",
+  "ts": "2026-04-23T08:00:13.100Z",
+  "fixStatus": 0,
+  "message": "enable_done_no_fix",
+  "intervalSeconds": 10,
+  "gpsEnabled": true,
+  "requestId": "22222222-2222-2222-2222-222222222222"
+}
+
+(5) ACK done (/ack)
+{
+  "type": "gps.control.ack",
+  "requestId": "22222222-2222-2222-2222-222222222222",
+  "action": "enable",
+  "status": "done",
+  "ts": "2026-04-23T08:00:14.000Z",
+  "data": {
+    "coldStart": true,
+    "failedCommands": [],
+    "heartbeatDetected": true,
+    "lineCount": 20,
+    "fixStatus": 0,
+    "gpsEnabled": true
+  }
+}
+
+
+4.4 disable 的期望上行
+(1) ACK received (/ack)
+{
+  "type": "gps.control.ack",
+  "requestId": "33333333-3333-3333-3333-333333333333",
+  "action": "disable",
+  "status": "received",
+  "ts": "2026-04-23T08:00:21.000Z"
+}
+
+(2) 定位详情 (/gps)
+{
+  "type": "gps.report",
+  "source": "guard.control.disable",
+  "ts": "2026-04-23T08:00:22.000Z",
+  "fixStatus": 0,
+  "lat": 0.0,
+  "lng": 0.0,
+  "alt": 0.0,
+  "cn": 0,
+  "coordSystem": "wgs84",
+  "rawLatWgs84": 0.0,
+  "rawLngWgs84": 0.0,
+  "reason": "gps_disabled",
+  "requestId": "33333333-3333-3333-3333-333333333333"
+}
+
+(3) 状态摘要 (/up)
+{
+  "type": "gps.status",
+  "source": "guard.control.disable",
+  "action": "disable",
+  "ts": "2026-04-23T08:00:22.100Z",
+  "fixStatus": 0,
+  "message": "gps_disabled",
+  "intervalSeconds": 10,
+  "gpsEnabled": false,
+  "requestId": "33333333-3333-3333-3333-333333333333"
+}
+
+(4) ACK done (/ack)
+{
+  "type": "gps.control.ack",
+  "requestId": "33333333-3333-3333-3333-333333333333",
+  "action": "disable",
+  "status": "done",
+  "ts": "2026-04-23T08:00:23.000Z",
+  "data": {
+    "gpsEnabled": false,
+    "atOk": true
+  }
+}
+
+
+4.5 set_interval 的期望上行
+(1) ACK received (/ack)
+{
+  "type": "gps.control.ack",
+  "requestId": "44444444-4444-4444-4444-444444444444",
+  "action": "set_interval",
+  "status": "received",
+  "ts": "2026-04-23T08:00:31.000Z"
+}
+
+(2) 状态摘要 (/up)
+{
+  "type": "gps.status",
+  "source": "guard.control.set_interval",
+  "action": "set_interval",
+  "ts": "2026-04-23T08:00:32.000Z",
+  "fixStatus": 0,
+  "message": "interval_updated",
+  "intervalSeconds": 15,
+  "gpsEnabled": true,
+  "requestId": "44444444-4444-4444-4444-444444444444"
+}
+
+(3) ACK done (/ack)
+{
+  "type": "gps.control.ack",
+  "requestId": "44444444-4444-4444-4444-444444444444",
+  "action": "set_interval",
+  "status": "done",
+  "ts": "2026-04-23T08:00:33.000Z",
+  "data": {
+    "intervalSeconds": 15
+  }
+}
+
+
+==================================================
+5. 错误回包（参考）
+==================================================
+当 type/action 不支持或 payload 有问题时，期望 ACK:
+{
+  "type": "gps.control.ack",
+  "requestId": "<requestId或守护生成值>",
+  "action": "unknown",
+  "status": "failed",
+  "ts": "2026-04-23T08:01:00.000Z",
+  "error": {
+    "code": "unsupported_type|unsupported_action|invalid_json|unsupported_protocol",
+    "message": "..."
+  }
+}
+
+
+==================================================
+6. 联调检查清单（建议）
+==================================================
+- 下发前确认 topic 为 ct02/{deviceId}/down
+- JSON 必须可直接 JSON.parse
+- requestId 必须贯穿 down -> ack -> up/gps
+- set_interval 的 intervalSeconds 传 10~3600
+- 至少观察到 ACK received；最终应看到 ACK done 或 ACK failed
